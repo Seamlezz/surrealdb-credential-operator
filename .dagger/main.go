@@ -19,7 +19,7 @@ const (
 var publishPlatforms = []dagger.Platform{"linux/amd64", "linux/arm64"}
 
 type SurrealdbCredentialOperator struct {
-	Source *dagger.Directory
+	Source *dagger.Directory `json:"source"`
 }
 
 func New(
@@ -61,12 +61,15 @@ func (m *SurrealdbCredentialOperator) Chart(ctx context.Context) error {
 	return err
 }
 
-func (m *SurrealdbCredentialOperator) E2E(ctx context.Context,
-	// Controller image visible from the k3s cluster.
-	// +optional
-	// +default="ghcr.io/seamlezz/surrealdb-credential-operator:edge"
-	image string,
-) error {
+func (m *SurrealdbCredentialOperator) E2e(ctx context.Context) error {
+	image, err := m.BuildImage(ctx, "")
+	if err != nil {
+		return err
+	}
+	if _, err := image.Sync(ctx); err != nil {
+		return err
+	}
+
 	k3s := dag.K3S("surrealdb-credential-operator-e2e")
 	server, err := k3s.Server().Start(ctx)
 	if err != nil {
@@ -77,8 +80,9 @@ func (m *SurrealdbCredentialOperator) E2E(ctx context.Context,
 		WithServiceBinding("kubernetes", server).
 		WithFile("/root/.kube/config", k3s.Config()).
 		WithEnvVariable("KUBECONFIG", "/root/.kube/config").
-		WithEnvVariable("E2E_OPERATOR_IMAGE", image).
-		WithExec([]string{"go", "test", "-tags=e2e", "./test/e2e", "-v", "-count=1"}).
+		WithEnvVariable("E2E_PROJECT_DIR", workspace).
+		WithEnvVariable("E2E_LOCAL_MANAGER", "true").
+		WithExec([]string{"go", "test", "-tags=e2e", "./test/e2e", "-v", "-count=1", "-timeout=12m"}).
 		Sync(ctx)
 	return err
 }

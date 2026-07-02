@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	api "github.com/Seamlezz/surrealdb-credential-operator/api/v1alpha1"
@@ -47,12 +49,21 @@ func NewAdminClientWithTLS(ctx context.Context, endpoint, username, password str
 }
 
 func openDB(ctx context.Context, endpoint string, tlsConfig *tls.Config) (*surrealdb.DB, error) {
-	if tlsConfig == nil {
-		return surrealdb.FromEndpointURLString(ctx, endpoint)
-	}
 	u, err := url.ParseRequestURI(endpoint)
 	if err != nil {
 		return nil, err
+	}
+	if tlsConfig == nil {
+		// The SurrealDB Go SDK HTTP transport requires namespace/database headers even
+		// for root sign-in. Accept platform-friendly HTTP(S) provider URLs, but use
+		// the equivalent WebSocket endpoint for RPC/session semantics.
+		switch u.Scheme {
+		case "http":
+			u.Scheme = "ws"
+		case "https":
+			u.Scheme = "wss"
+		}
+		return surrealdb.FromEndpointURLString(ctx, u.String())
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, fmt.Errorf("custom TLS config is currently supported only for http/https endpoints, got %q", u.Scheme)
@@ -69,12 +80,14 @@ func openDB(ctx context.Context, endpoint string, tlsConfig *tls.Config) (*surre
 
 // DefineUser creates or overwrites a SurrealDB system user.
 func (c *AdminClient) DefineUser(ctx context.Context, target UserTarget, username, password string, roles []api.SurrealRole) error {
-	query, vars, err := DefineUserQuery(target, username, roles)
+	query, err := DefineUserQuery(target, username, password, roles)
 	if err != nil {
 		return err
 	}
-	vars["password"] = password
-	return execQuery(ctx, c.db, query, vars)
+	if err := execQuery(ctx, c.db, query, nil); err != nil {
+		return redactPasswordError(err, password)
+	}
+	return nil
 }
 
 // RemoveUser removes a SurrealDB system user if it exists.
@@ -97,6 +110,16 @@ func (c *AdminClient) Close(ctx context.Context) error {
 		return nil
 	}
 	return c.db.Close(ctx)
+}
+
+func redactPasswordError(err error, password string) error {
+	if err == nil || password == "" {
+		return err
+	}
+	message := err.Error()
+	message = strings.ReplaceAll(message, strconv.Quote(password), "[redacted]")
+	message = strings.ReplaceAll(message, password, "[redacted]")
+	return fmt.Errorf("%s", message)
 }
 
 func execQuery(ctx context.Context, db *surrealdb.DB, query string, vars map[string]any) error {

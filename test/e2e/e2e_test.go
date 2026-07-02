@@ -4,15 +4,19 @@
 package e2e
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	surrealdb "github.com/surrealdb/surrealdb.go"
 )
 
 const (
@@ -21,23 +25,42 @@ const (
 	appNamespace      = "smoke-e2e"
 )
 
+var (
+	managerCmd     *exec.Cmd
+	portForwardCmd *exec.Cmd
+)
+
 var _ = Describe("SurrealDB credential lifecycle", Ordered, func() {
 	BeforeAll(func() {
 		if img := os.Getenv("E2E_OPERATOR_IMAGE"); img != "" {
 			projectImage = img
 		}
+		waitForKubernetes()
 		run("make", "install")
-		run("make", "deploy", "IMG="+projectImage)
-		wait("deployment/surrealdb-credential-operator-controller-manager", operatorNamespace)
+		if os.Getenv("E2E_LOCAL_MANAGER") == "true" {
+			startLocalManager()
+		} else {
+			run("make", "deploy", "IMG="+projectImage)
+			wait("deployment/surrealdb-credential-operator-controller-manager", operatorNamespace)
+		}
 		installSurrealDB()
+		startSurrealPortForward()
 		bootstrapSurrealNamespaceAndDatabase()
 	})
 
 	AfterAll(func() {
-		runAllowFail("kubectl", "delete", "ns", appNamespace, "--ignore-not-found")
-		runAllowFail("kubectl", "delete", "ns", surrealNamespace, "--ignore-not-found")
-		runAllowFail("make", "undeploy")
-		runAllowFail("make", "uninstall")
+		stopSurrealPortForward()
+		runAllowFail("kubectl", "delete", "ns", appNamespace, "--ignore-not-found", "--wait=false")
+		runAllowFail("kubectl", "delete", "ns", surrealNamespace, "--ignore-not-found", "--wait=false")
+		stopLocalManager()
+		if os.Getenv("E2E_LOCAL_MANAGER") != "true" {
+			runAllowFail("make", "undeploy")
+		}
+		runAllowFail("kubectl", "delete", "crd",
+			"surrealdbcredentials.surrealdb.seamlezz.com",
+			"surrealdbproviders.surrealdb.seamlezz.com",
+			"surrealdbtenantpolicies.surrealdb.seamlezz.com",
+			"--ignore-not-found", "--wait=false")
 	})
 
 	It("creates, rotates, and removes a database credential", func() {
@@ -48,11 +71,11 @@ kind: SurrealDBProvider
 metadata:
   name: e2e
 spec:
-  endpoint: http://surrealdb.%s.svc.cluster.local:8000
+  endpoint: %s
   rootCredentialRef:
     namespace: %s
     name: surrealdb-root
-`, surrealNamespace, surrealNamespace))
+`, providerEndpoint(), surrealNamespace))
 		apply(fmt.Sprintf(`
 apiVersion: surrealdb.seamlezz.com/v1alpha1
 kind: SurrealDBTenantPolicy
@@ -84,8 +107,9 @@ spec:
 `, appNamespace))
 
 		Eventually(func(g Gomega) {
-			out := runOut("kubectl", "get", "secret", "surrealdb-smoke-credentials", "-n", appNamespace, "-o", "jsonpath={.data.username}")
-			g.Expect(out).NotTo(BeEmpty())
+			out, err := command("kubectl", "get", "secret", "surrealdb-smoke-credentials", "-n", appNamespace, "-o", "jsonpath={.data.username}").CombinedOutput()
+			g.Expect(err).NotTo(HaveOccurred(), "%s\n%s", string(out), diagnostics())
+			g.Expect(strings.TrimSpace(string(out))).NotTo(BeEmpty(), diagnostics())
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		username := secretValue(appNamespace, "surrealdb-smoke-credentials", "username")
@@ -163,7 +187,83 @@ spec:
 func bootstrapSurrealNamespaceAndDatabase() {
 	// SurrealDBCredential deliberately does not create namespaces/databases.
 	// Create them through the root user before requesting app credentials.
-	run("kubectl", "run", "surreal-bootstrap", "-n", surrealNamespace, "--restart=Never", "--rm", "-i", "--image=surrealdb/surrealdb:v3.1.2", "--", "sql", "--endpoint", "http://surrealdb:8000", "--username", "root", "--password", "rootpass", "--hide-welcome", "--pretty", "DEFINE NAMESPACE smoke; USE NS smoke; DEFINE DATABASE smoke;")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := surrealdb.FromEndpointURLString(ctx, localSurrealEndpoint())
+	Expect(err).NotTo(HaveOccurred())
+	defer func() { _ = db.Close(context.Background()) }()
+	_, err = db.SignIn(ctx, surrealdb.Auth{Username: "root", Password: "rootpass"})
+	Expect(err).NotTo(HaveOccurred())
+	results, err := surrealdb.Query[any](ctx, db, "DEFINE NAMESPACE smoke; USE NS smoke; DEFINE DATABASE smoke;", nil)
+	Expect(err).NotTo(HaveOccurred())
+	for i, result := range *results {
+		Expect(result.Error).NotTo(HaveOccurred(), "SurrealQL bootstrap statement %d failed", i)
+	}
+}
+
+func startSurrealPortForward() {
+	portForwardCmd = command("kubectl", "port-forward", "-n", surrealNamespace, "svc/surrealdb", "18000:8000")
+	portForwardCmd.Stdout = GinkgoWriter
+	portForwardCmd.Stderr = GinkgoWriter
+	portForwardCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	Expect(portForwardCmd.Start()).To(Succeed())
+	DeferCleanup(stopSurrealPortForward)
+	Eventually(func(g Gomega) {
+		resp, err := http.Get(localSurrealHTTPEndpoint() + "/health")
+		g.Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		g.Expect(resp.StatusCode).To(BeNumerically(">=", 200))
+		g.Expect(resp.StatusCode).To(BeNumerically("<", 300))
+	}, time.Minute, time.Second).Should(Succeed())
+}
+
+func stopSurrealPortForward() {
+	if portForwardCmd == nil || portForwardCmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-portForwardCmd.Process.Pid, syscall.SIGTERM)
+	_, _ = portForwardCmd.Process.Wait()
+	portForwardCmd = nil
+}
+
+func providerEndpoint() string {
+	if os.Getenv("E2E_LOCAL_MANAGER") == "true" {
+		return localSurrealEndpoint()
+	}
+	return fmt.Sprintf("ws://surrealdb.%s.svc.cluster.local:8000", surrealNamespace)
+}
+
+func localSurrealEndpoint() string {
+	return "ws://127.0.0.1:18000"
+}
+
+func localSurrealHTTPEndpoint() string {
+	return "http://127.0.0.1:18000"
+}
+
+func waitForKubernetes() {
+	Eventually(func(g Gomega) {
+		out, err := command("kubectl", "version").CombinedOutput()
+		g.Expect(err).NotTo(HaveOccurred(), string(out))
+	}, 2*time.Minute, 2*time.Second).Should(Succeed())
+}
+
+func startLocalManager() {
+	managerCmd = command("go", "run", "./cmd/main.go", "--metrics-bind-address=0", "--health-probe-bind-address=0")
+	managerCmd.Stdout = GinkgoWriter
+	managerCmd.Stderr = GinkgoWriter
+	managerCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	Expect(managerCmd.Start()).To(Succeed())
+	DeferCleanup(stopLocalManager)
+}
+
+func stopLocalManager() {
+	if managerCmd == nil || managerCmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-managerCmd.Process.Pid, syscall.SIGTERM)
+	_, _ = managerCmd.Process.Wait()
+	managerCmd = nil
 }
 
 func apply(yaml string) {
@@ -184,9 +284,38 @@ func secretValue(namespace, name, key string) string {
 	return string(decoded)
 }
 
+func diagnostics() string {
+	commands := [][]string{
+		{"kubectl", "get", "surrealdbprovider", "e2e", "-o", "yaml"},
+		{"kubectl", "get", "surrealdbtenantpolicy", "smoke", "-n", appNamespace, "-o", "yaml"},
+		{"kubectl", "get", "surrealdbcredential", "smoke-editor", "-n", appNamespace, "-o", "yaml"},
+		{"kubectl", "get", "events", "-n", appNamespace, "--sort-by=.lastTimestamp"},
+	}
+	var b strings.Builder
+	for _, args := range commands {
+		b.WriteString("\n$ ")
+		b.WriteString(strings.Join(args, " "))
+		b.WriteString("\n")
+		out, err := command(args[0], args[1:]...).CombinedOutput()
+		b.Write(out)
+		if err != nil {
+			b.WriteString(err.Error())
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
 func run(name string, args ...string) {
-	_, err := command(name, args...).CombinedOutput()
-	Expect(err).NotTo(HaveOccurred(), strings.Join(append([]string{name}, args...), " "))
+	out, err := command(name, args...).CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "%s\n%s", strings.Join(append([]string{name}, args...), " "), string(out))
+}
+
+func runInput(input, name string, args ...string) {
+	cmd := command(name, args...)
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "%s\n%s", strings.Join(append([]string{name}, args...), " "), string(out))
 }
 
 func runOut(name string, args ...string) string {
@@ -196,11 +325,26 @@ func runOut(name string, args ...string) string {
 }
 
 func runAllowFail(name string, args ...string) {
-	_, _ = command(name, args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = projectRoot()
+	cmd.Env = append(os.Environ(), "GO111MODULE=on")
+	_, _ = cmd.CombinedOutput()
 }
 
 func command(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
+	cmd.Dir = projectRoot()
 	cmd.Env = append(os.Environ(), "GO111MODULE=on")
 	return cmd
+}
+
+func projectRoot() string {
+	if root := os.Getenv("E2E_PROJECT_DIR"); root != "" {
+		return root
+	}
+	wd, err := os.Getwd()
+	Expect(err).NotTo(HaveOccurred())
+	return strings.TrimSuffix(wd, "/test/e2e")
 }

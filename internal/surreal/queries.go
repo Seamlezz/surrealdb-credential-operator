@@ -2,6 +2,7 @@ package surreal
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	api "github.com/Seamlezz/surrealdb-credential-operator/api/v1alpha1"
@@ -15,26 +16,26 @@ type UserTarget struct {
 }
 
 // DefineUserQuery builds a SurrealQL query that defines or overwrites a system user.
-func DefineUserQuery(target UserTarget, username string, roles []api.SurrealRole) (string, map[string]any, error) {
+func DefineUserQuery(target UserTarget, username, password string, roles []api.SurrealRole) (string, error) {
 	prefix, err := usePrefix(target)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	userIdent, err := EscapeIdent(username)
 	if err != nil {
-		return "", nil, fmt.Errorf("escape username: %w", err)
+		return "", fmt.Errorf("escape username: %w", err)
 	}
 	roleList, err := renderRoles(roles)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 
 	on := "DATABASE"
 	if target.Level == api.UserLevelNamespace {
 		on = "NAMESPACE"
 	}
-	query := fmt.Sprintf("%s\nDEFINE USER OVERWRITE %s ON %s PASSWORD $password ROLES %s;", prefix, userIdent, on, roleList)
-	return query, map[string]any{"password": nil}, nil
+	query := fmt.Sprintf("%s\nDEFINE USER OVERWRITE %s ON %s PASSWORD %s ROLES %s;", prefix, userIdent, on, strconv.Quote(password), roleList)
+	return query, nil
 }
 
 // RemoveUserQuery builds a SurrealQL query that removes a system user if it exists.

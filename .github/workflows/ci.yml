@@ -21,4 +21,18 @@ jobs:
         with:
           version: "latest"
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
-          args: check
+          module: .
+          call: check
+
+  e2e:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Dagger e2e
+        uses: memospot/action-dagger@v1
+        with:
+          version: "latest"
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          module: .
+          call: e-2-e

@@ -1,6 +1,7 @@
 package surreal
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -8,25 +9,22 @@ import (
 )
 
 func TestDefineUserQueryDatabase(t *testing.T) {
-	query, vars, err := DefineUserQuery(UserTarget{Level: api.UserLevelDatabase, Namespace: "smoke", Database: "smoke-db"}, "k8s_smoke_editor_abcd1234", []api.SurrealRole{api.RoleEditor})
+	query, err := DefineUserQuery(UserTarget{Level: api.UserLevelDatabase, Namespace: "smoke", Database: "smoke-db"}, "k8s_smoke_editor_abcd1234", "secret", []api.SurrealRole{api.RoleEditor})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "USE NS smoke DB `smoke-db`;\nDEFINE USER OVERWRITE k8s_smoke_editor_abcd1234 ON DATABASE PASSWORD $password ROLES EDITOR;"
+	want := "USE NS smoke DB `smoke-db`;\nDEFINE USER OVERWRITE k8s_smoke_editor_abcd1234 ON DATABASE PASSWORD \"secret\" ROLES EDITOR;"
 	if query != want {
 		t.Fatalf("query mismatch\ngot:  %s\nwant: %s", query, want)
-	}
-	if _, ok := vars["password"]; !ok {
-		t.Fatal("expected password variable")
 	}
 }
 
 func TestDefineUserQueryNamespace(t *testing.T) {
-	query, _, err := DefineUserQuery(UserTarget{Level: api.UserLevelNamespace, Namespace: "select"}, "writer", []api.SurrealRole{api.RoleViewer, api.RoleEditor})
+	query, err := DefineUserQuery(UserTarget{Level: api.UserLevelNamespace, Namespace: "select"}, "writer", "secret", []api.SurrealRole{api.RoleViewer, api.RoleEditor})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "USE NS `select`;\nDEFINE USER OVERWRITE writer ON NAMESPACE PASSWORD $password ROLES VIEWER, EDITOR;"
+	want := "USE NS `select`;\nDEFINE USER OVERWRITE writer ON NAMESPACE PASSWORD \"secret\" ROLES VIEWER, EDITOR;"
 	if query != want {
 		t.Fatalf("query mismatch\ngot:  %s\nwant: %s", query, want)
 	}
@@ -44,25 +42,38 @@ func TestRemoveUserQuery(t *testing.T) {
 }
 
 func TestDefineUserQueryRejectsMaliciousControlInput(t *testing.T) {
-	_, _, err := DefineUserQuery(UserTarget{Level: api.UserLevelDatabase, Namespace: "smoke\nREMOVE USER root", Database: "smoke"}, "writer", []api.SurrealRole{api.RoleViewer})
+	_, err := DefineUserQuery(UserTarget{Level: api.UserLevelDatabase, Namespace: "smoke\nREMOVE USER root", Database: "smoke"}, "writer", "secret", []api.SurrealRole{api.RoleViewer})
 	if err == nil {
 		t.Fatal("expected malicious namespace to fail")
 	}
 }
 
-func TestDefineUserQueryDoesNotInterpolatePassword(t *testing.T) {
-	query, _, err := DefineUserQuery(UserTarget{Level: api.UserLevelDatabase, Namespace: "smoke", Database: "smoke"}, "writer", []api.SurrealRole{api.RoleViewer})
+func TestDefineUserQueryEscapesPasswordLiteral(t *testing.T) {
+	query, err := DefineUserQuery(UserTarget{Level: api.UserLevelDatabase, Namespace: "smoke", Database: "smoke"}, "writer", "s\"; REMOVE USER root; --", []api.SurrealRole{api.RoleViewer})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(query, "PASSWORD $password") {
-		t.Fatalf("expected password parameter, got %s", query)
+	if !strings.Contains(query, `PASSWORD "s\"; REMOVE USER root; --"`) {
+		t.Fatalf("expected escaped password literal, got %s", query)
+	}
+	if strings.Contains(query, "PASSWORD $password") {
+		t.Fatalf("password parameters are not valid in DEFINE USER PASSWORD clauses: %s", query)
 	}
 }
 
 func TestDefineUserQueryRejectsUnknownRole(t *testing.T) {
-	_, _, err := DefineUserQuery(UserTarget{Level: api.UserLevelDatabase, Namespace: "smoke", Database: "smoke"}, "writer", []api.SurrealRole{"ADMIN"})
+	_, err := DefineUserQuery(UserTarget{Level: api.UserLevelDatabase, Namespace: "smoke", Database: "smoke"}, "writer", "secret", []api.SurrealRole{"ADMIN"})
 	if err == nil {
 		t.Fatal("expected unknown role error")
+	}
+}
+
+func TestRedactPasswordError(t *testing.T) {
+	err := redactPasswordError(errors.New(`parse error near PASSWORD "s\"ecret" with raw s"ecret too`), `s"ecret`)
+	if strings.Contains(err.Error(), `s"ecret`) || strings.Contains(err.Error(), `"s\"ecret"`) {
+		t.Fatalf("password was not redacted: %s", err)
+	}
+	if !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("expected redacted marker: %s", err)
 	}
 }
