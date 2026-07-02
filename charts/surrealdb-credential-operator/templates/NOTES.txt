@@ -1,0 +1,6 @@
+SurrealDB Credential Operator has been installed.
+
+CRDs are installed from the chart's crds/ directory:
+- SurrealDBProvider
+- SurrealDBTenantPolicy
+- SurrealDBCredential

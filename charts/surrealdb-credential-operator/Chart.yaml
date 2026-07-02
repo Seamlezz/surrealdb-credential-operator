@@ -1,0 +1,15 @@
+apiVersion: v2
+name: surrealdb-credential-operator
+description: Kubernetes operator for scoped SurrealDB system-user credentials
+type: application
+version: 0.1.0
+appVersion: "v0.1.0"
+kubeVersion: ">=1.31.0-0"
+home: https://github.com/Seamlezz/surrealdb-credential-operator
+sources:
+  - https://github.com/Seamlezz/surrealdb-credential-operator
+maintainers:
+  - name: Seamlezz
+annotations:
+  artifacthub.io/category: security
+  artifacthub.io/operator: "true"

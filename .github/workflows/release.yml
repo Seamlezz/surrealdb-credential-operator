@@ -1,0 +1,57 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, e.g. v0.1.0
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Dagger check
+        uses: memospot/action-dagger@v1
+        with:
+          version: "latest"
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          args: check
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then tag="${GITHUB_REF_NAME}"; fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+      - name: Publish release image and chart
+        uses: memospot/action-dagger@v1
+        with:
+          version: "latest"
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          args: >-
+            publish
+            --tag=${{ steps.tag.outputs.tag }}
+            --username=${{ github.actor }}
+            --password=env:GITHUB_TOKEN
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Dagger check
+        uses: memospot/action-dagger@v1
+        with:
+          version: "latest"
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          args: check

@@ -1,0 +1,223 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: surrealdbproviders.surrealdb.seamlezz.com
+spec:
+  group: surrealdb.seamlezz.com
+  names:
+    kind: SurrealDBProvider
+    listKind: SurrealDBProviderList
+    plural: surrealdbproviders
+    singular: surrealdbprovider
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: SurrealDBProvider is the Schema for the surrealdbproviders API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines desired state of SurrealDBProvider.
+            properties:
+              endpoint:
+                description: |-
+                  Endpoint is the SurrealDB HTTP(S) or WS(S) endpoint used by the controller.
+                  Examples: https://surrealdb.surrealdb.svc.cluster.local:8000, ws://surrealdb:8000/rpc.
+                maxLength: 2048
+                minLength: 1
+                pattern: ^(https?|wss?)://.+
+                type: string
+              rootCredentialRef:
+                description: RootCredentialRef references the Kubernetes Secret containing
+                  SurrealDB admin credentials.
+                properties:
+                  name:
+                    description: Name is the Secret name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace is the Secret namespace.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  passwordKey:
+                    default: password
+                    description: PasswordKey is the Secret data key containing the
+                      admin password.
+                    minLength: 1
+                    type: string
+                  usernameKey:
+                    default: username
+                    description: UsernameKey is the Secret data key containing the
+                      admin username.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              tls:
+                description: TLS configures optional TLS trust and client certificate
+                  settings for the provider endpoint.
+                properties:
+                  caSecretRef:
+                    description: CASecretRef references a Secret key containing PEM-encoded
+                      CA certificates.
+                    properties:
+                      key:
+                        default: ca.crt
+                        description: Key is the Secret data key containing a PEM-encoded
+                          CA bundle.
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name is the Secret name.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: Namespace is the Secret namespace.
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  clientCertificateRef:
+                    description: ClientCertificateRef references a Secret containing
+                      PEM-encoded client certificate and key material.
+                    properties:
+                      certKey:
+                        default: tls.crt
+                        description: CertKey is the Secret data key containing a PEM-encoded
+                          client certificate.
+                        minLength: 1
+                        type: string
+                      keyKey:
+                        default: tls.key
+                        description: KeyKey is the Secret data key containing a PEM-encoded
+                          client private key.
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name is the Secret name.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: Namespace is the Secret namespace.
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  insecureSkipVerify:
+                    description: InsecureSkipVerify disables TLS certificate verification.
+                      This is intended only for local/dev use.
+                    type: boolean
+                type: object
+            required:
+            - endpoint
+            - rootCredentialRef
+            type: object
+          status:
+            description: status defines observed state of SurrealDBProvider.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the provider state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the latest metadata.generation
+                  observed by the controller.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

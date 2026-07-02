@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- surrealdb_v1alpha1_surrealdbprovider.yaml
+- surrealdb_v1alpha1_surrealdbtenantpolicy.yaml
+- surrealdb_v1alpha1_surrealdbcredential.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

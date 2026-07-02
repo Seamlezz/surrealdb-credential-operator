@@ -1,0 +1,9 @@
+apiVersion: surrealdb.seamlezz.com/v1alpha1
+kind: SurrealDBTenantPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: surrealdb-credential-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: surrealdbtenantpolicy-sample
+spec:
+  # TODO(user): Add fields here

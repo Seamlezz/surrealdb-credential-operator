@@ -1,0 +1,78 @@
+name: publish-edge
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-edge-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Dagger check
+        uses: memospot/action-dagger@v1
+        with:
+          version: "latest"
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          args: check
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "chart_version=0.0.0-edge.${short_sha}" >> "$GITHUB_OUTPUT"
+      - name: Publish edge image
+        uses: memospot/action-dagger@v1
+        with:
+          version: "latest"
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          args: >-
+            publish-image
+            --image=ghcr.io/seamlezz/surrealdb-credential-operator
+            --tag=edge
+            --username=${{ github.actor }}
+            --password=env:GITHUB_TOKEN
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish sha image
+        uses: memospot/action-dagger@v1
+        with:
+          version: "latest"
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          args: >-
+            publish-image
+            --image=ghcr.io/seamlezz/surrealdb-credential-operator
+            --tag=sha-${{ steps.tags.outputs.short_sha }}
+            --username=${{ github.actor }}
+            --password=env:GITHUB_TOKEN
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish edge chart
+        uses: memospot/action-dagger@v1
+        with:
+          version: "latest"
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          args: >-
+            publish-chart
+            --version=${{ steps.tags.outputs.chart_version }}
+            --username=${{ github.actor }}
+            --password=env:GITHUB_TOKEN
+            --repository=oci://ghcr.io/seamlezz/charts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

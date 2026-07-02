@@ -1,0 +1,113 @@
+package surreal
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net/http"
+	"net/url"
+	"time"
+
+	api "github.com/Seamlezz/surrealdb-credential-operator/api/v1alpha1"
+	surrealdb "github.com/surrealdb/surrealdb.go"
+	"github.com/surrealdb/surrealdb.go/pkg/connection"
+	surrealhttp "github.com/surrealdb/surrealdb.go/pkg/connection/http"
+)
+
+// Admin manages SurrealDB system users.
+type Admin interface {
+	DefineUser(ctx context.Context, target UserTarget, username, password string, roles []api.SurrealRole) error
+	RemoveUser(ctx context.Context, target UserTarget, username string) error
+	Ping(ctx context.Context) error
+	Close(ctx context.Context) error
+}
+
+// AdminClient is a SurrealDB-backed Admin implementation.
+type AdminClient struct {
+	db *surrealdb.DB
+}
+
+// NewAdminClient connects to SurrealDB and signs in with root/admin credentials.
+func NewAdminClient(ctx context.Context, endpoint, username, password string) (*AdminClient, error) {
+	return NewAdminClientWithTLS(ctx, endpoint, username, password, nil)
+}
+
+// NewAdminClientWithTLS connects to SurrealDB and signs in with root/admin credentials.
+func NewAdminClientWithTLS(ctx context.Context, endpoint, username, password string, tlsConfig *tls.Config) (*AdminClient, error) {
+	db, err := openDB(ctx, endpoint, tlsConfig)
+	if err != nil {
+		return nil, fmt.Errorf("connect to surrealdb: %w", err)
+	}
+	client := &AdminClient{db: db}
+	if _, err := db.SignIn(ctx, surrealdb.Auth{Username: username, Password: password}); err != nil {
+		_ = client.Close(ctx)
+		return nil, fmt.Errorf("sign in to surrealdb: %w", err)
+	}
+	return client, nil
+}
+
+func openDB(ctx context.Context, endpoint string, tlsConfig *tls.Config) (*surrealdb.DB, error) {
+	if tlsConfig == nil {
+		return surrealdb.FromEndpointURLString(ctx, endpoint)
+	}
+	u, err := url.ParseRequestURI(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("custom TLS config is currently supported only for http/https endpoints, got %q", u.Scheme)
+	}
+	conf := connection.NewConfig(u)
+	if err := conf.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid connection config: %w", err)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsConfig
+	con := surrealhttp.New(conf).SetHTTPClient(&http.Client{Timeout: 30 * time.Second, Transport: transport})
+	return surrealdb.FromConnection(ctx, con)
+}
+
+// DefineUser creates or overwrites a SurrealDB system user.
+func (c *AdminClient) DefineUser(ctx context.Context, target UserTarget, username, password string, roles []api.SurrealRole) error {
+	query, vars, err := DefineUserQuery(target, username, roles)
+	if err != nil {
+		return err
+	}
+	vars["password"] = password
+	return execQuery(ctx, c.db, query, vars)
+}
+
+// RemoveUser removes a SurrealDB system user if it exists.
+func (c *AdminClient) RemoveUser(ctx context.Context, target UserTarget, username string) error {
+	query, err := RemoveUserQuery(target, username)
+	if err != nil {
+		return err
+	}
+	return execQuery(ctx, c.db, query, nil)
+}
+
+// Ping verifies the connection can run a trivial query.
+func (c *AdminClient) Ping(ctx context.Context) error {
+	return execQuery(ctx, c.db, "RETURN true;", nil)
+}
+
+// Close closes the SurrealDB connection.
+func (c *AdminClient) Close(ctx context.Context) error {
+	if c == nil || c.db == nil {
+		return nil
+	}
+	return c.db.Close(ctx)
+}
+
+func execQuery(ctx context.Context, db *surrealdb.DB, query string, vars map[string]any) error {
+	results, err := surrealdb.Query[any](ctx, db, query, vars)
+	if err != nil {
+		return fmt.Errorf("execute surrealql: %w", err)
+	}
+	for i, result := range *results {
+		if result.Error != nil {
+			return fmt.Errorf("surrealql statement %d failed: %w", i, result.Error)
+		}
+	}
+	return nil
+}
