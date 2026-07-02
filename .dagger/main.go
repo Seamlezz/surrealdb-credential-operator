@@ -30,6 +30,19 @@ func New(
 	return &SurrealdbCredentialOperator{Source: source}
 }
 
+func (m *SurrealdbCredentialOperator) Check(ctx context.Context) error {
+	if err := m.Lint(ctx); err != nil {
+		return err
+	}
+	if err := m.Test(ctx); err != nil {
+		return err
+	}
+	if err := m.Manifests(ctx); err != nil {
+		return err
+	}
+	return m.Chart(ctx)
+}
+
 // +check
 func (m *SurrealdbCredentialOperator) Lint(ctx context.Context) error {
 	_, err := m.goBase().WithExec([]string{"go", "vet", "./..."}).Sync(ctx)
