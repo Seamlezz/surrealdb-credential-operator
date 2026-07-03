@@ -30,15 +30,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+type defineCall struct {
+	target   surreal.UserTarget
+	username string
+	password string
+	roles    []surrealdbv1alpha1.SurrealRole
+}
+
 type fakeAdmin struct {
-	defined   []string
+	defined   []defineCall
 	removed   []string
+	defineErr error
 	removeErr error
 }
 
 func (f *fakeAdmin) DefineUser(ctx context.Context, target surreal.UserTarget, username, password string, roles []surrealdbv1alpha1.SurrealRole) error {
-	f.defined = append(f.defined, username+":"+password)
-	return nil
+	f.defined = append(f.defined, defineCall{target: target, username: username, password: password, roles: append([]surrealdbv1alpha1.SurrealRole(nil), roles...)})
+	return f.defineErr
 }
 func (f *fakeAdmin) RemoveUser(ctx context.Context, target surreal.UserTarget, username string) error {
 	f.removed = append(f.removed, username)
@@ -76,10 +84,29 @@ var _ = Describe("SurrealDBCredential Controller", func() {
 
 		secret := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "surrealdb-smoke-credentials"}, secret)).To(Succeed())
+		Expect(string(secret.Data["url"])).To(Equal("ws://surrealdb:8000"))
+		Expect(string(secret.Data["namespace"])).To(Equal("smoke"))
+		Expect(string(secret.Data["database"])).To(Equal("smoke"))
+		Expect(string(secret.Data["level"])).To(Equal("database"))
 		Expect(string(secret.Data["username"])).NotTo(BeEmpty())
 		Expect(string(secret.Data["password"])).NotTo(BeEmpty())
+		Expect(string(secret.Data["SURREAL_URL"])).To(Equal(string(secret.Data["url"])))
+		Expect(string(secret.Data["SURREAL_NS"])).To(Equal(string(secret.Data["namespace"])))
+		Expect(string(secret.Data["SURREAL_DB"])).To(Equal(string(secret.Data["database"])))
 		Expect(string(secret.Data["SURREAL_USER"])).To(Equal(string(secret.Data["username"])))
+		Expect(string(secret.Data["SURREAL_PASS"])).To(Equal(string(secret.Data["password"])))
 		Expect(admin.defined).To(HaveLen(1))
+		Expect(admin.defined[0].target).To(Equal(surreal.UserTarget{Level: surrealdbv1alpha1.UserLevelDatabase, Namespace: "smoke", Database: "smoke"}))
+		Expect(admin.defined[0].username).To(Equal(string(secret.Data["username"])))
+		Expect(admin.defined[0].password).To(Equal(string(secret.Data["password"])))
+		Expect(admin.defined[0].roles).To(Equal([]surrealdbv1alpha1.SurrealRole{surrealdbv1alpha1.RoleEditor}))
+
+		latest := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, latest)).To(Succeed())
+		expectCredentialCondition(latest, operatorconditions.TypeReady, metav1.ConditionTrue, operatorconditions.ReasonReconciled)
+		expectCredentialCondition(latest, operatorconditions.TypePolicyAccepted, metav1.ConditionTrue, operatorconditions.ReasonPolicyAccepted)
+		expectCredentialCondition(latest, operatorconditions.TypeUserDefined, metav1.ConditionTrue, operatorconditions.ReasonDefineUserSucceeded)
+		expectCredentialCondition(latest, operatorconditions.TypeSecretReady, metav1.ConditionTrue, operatorconditions.ReasonSecretWritten)
 	})
 
 	It("marks policy denied without touching SurrealDB", func() {
@@ -98,6 +125,91 @@ var _ = Describe("SurrealDBCredential Controller", func() {
 		_, err = reconciler.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(admin.defined).To(BeEmpty())
+	})
+
+	It("marks policy not found without touching SurrealDB", func() {
+		ns := "cred-policy-missing"
+		admin := &fakeAdmin{}
+		createIgnoringAlreadyExists(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+		Expect(k8sClient.Create(ctx, &surrealdbv1alpha1.SurrealDBCredential{ObjectMeta: metav1.ObjectMeta{Name: "smoke-editor", Namespace: ns}, Spec: surrealdbv1alpha1.SurrealDBCredentialSpec{PolicyRef: surrealdbv1alpha1.LocalPolicyReference{Name: "missing"}, Level: surrealdbv1alpha1.UserLevelDatabase, Database: "smoke", Roles: []surrealdbv1alpha1.SurrealRole{surrealdbv1alpha1.RoleEditor}, TargetSecret: surrealdbv1alpha1.TargetSecretSpec{Name: "surrealdb-smoke-credentials"}}})).To(Succeed())
+		reconciler := testCredentialReconciler(admin)
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "smoke-editor"}}
+
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(admin.defined).To(BeEmpty())
+		latest := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, latest)).To(Succeed())
+		expectCredentialCondition(latest, operatorconditions.TypeReady, metav1.ConditionFalse, operatorconditions.ReasonPolicyNotFound)
+	})
+
+	It("marks provider not found without touching SurrealDB", func() {
+		ns := "cred-provider-missing"
+		admin := &fakeAdmin{}
+		createIgnoringAlreadyExists(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+		Expect(k8sClient.Create(ctx, &surrealdbv1alpha1.SurrealDBTenantPolicy{ObjectMeta: metav1.ObjectMeta{Name: "smoke", Namespace: ns}, Spec: surrealdbv1alpha1.SurrealDBTenantPolicySpec{ProviderRef: surrealdbv1alpha1.LocalProviderReference{Name: "missing-provider"}, SurrealNamespace: "smoke", DatabaseUsers: surrealdbv1alpha1.DatabaseUserPolicy{AllowedDatabases: []string{"smoke"}, AllowedRoles: []surrealdbv1alpha1.SurrealRole{surrealdbv1alpha1.RoleEditor}}}})).To(Succeed())
+		Expect(k8sClient.Create(ctx, &surrealdbv1alpha1.SurrealDBCredential{ObjectMeta: metav1.ObjectMeta{Name: "smoke-editor", Namespace: ns}, Spec: surrealdbv1alpha1.SurrealDBCredentialSpec{PolicyRef: surrealdbv1alpha1.LocalPolicyReference{Name: "smoke"}, Level: surrealdbv1alpha1.UserLevelDatabase, Database: "smoke", Roles: []surrealdbv1alpha1.SurrealRole{surrealdbv1alpha1.RoleEditor}, TargetSecret: surrealdbv1alpha1.TargetSecretSpec{Name: "surrealdb-smoke-credentials"}}})).To(Succeed())
+		reconciler := testCredentialReconciler(admin)
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "smoke-editor"}}
+
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(admin.defined).To(BeEmpty())
+		latest := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, latest)).To(Succeed())
+		expectCredentialCondition(latest, operatorconditions.TypeReady, metav1.ConditionFalse, operatorconditions.ReasonProviderNotFound)
+	})
+
+	It("does not write target Secret when DefineUser fails", func() {
+		ns := "cred-define-fails"
+		defineErr := errors.New("define failed")
+		admin := &fakeAdmin{defineErr: defineErr}
+		createCredentialFixture(ctx, ns)
+		reconciler := testCredentialReconciler(admin)
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "smoke-editor"}}
+
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(admin.defined).To(HaveLen(1))
+		secret := &corev1.Secret{}
+		err = k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "surrealdb-smoke-credentials"}, secret)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		latest := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, latest)).To(Succeed())
+		expectCredentialCondition(latest, operatorconditions.TypeReady, metav1.ConditionFalse, operatorconditions.ReasonDefineUserFailed)
+		expectCredentialCondition(latest, operatorconditions.TypeUserDefined, metav1.ConditionFalse, operatorconditions.ReasonDefineUserFailed)
+	})
+
+	It("reuses existing password when no rotation is requested", func() {
+		ns := "cred-reuse-password"
+		admin := &fakeAdmin{}
+		createCredentialFixture(ctx, ns)
+		reconciler := testCredentialReconciler(admin)
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "smoke-editor"}}
+
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "surrealdb-smoke-credentials"}, secret)).To(Succeed())
+		firstPassword := string(secret.Data["password"])
+
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "surrealdb-smoke-credentials"}, secret)).To(Succeed())
+		Expect(string(secret.Data["password"])).To(Equal(firstPassword))
+		Expect(admin.defined).To(HaveLen(2))
+		Expect(admin.defined[1].password).To(Equal(firstPassword))
 	})
 
 	It("rejects an existing unowned target Secret", func() {
@@ -257,4 +369,11 @@ func createIgnoringAlreadyExists(ctx context.Context, obj client.Object) {
 		return
 	}
 	Expect(err).NotTo(HaveOccurred())
+}
+
+func expectCredentialCondition(credential *surrealdbv1alpha1.SurrealDBCredential, conditionType string, status metav1.ConditionStatus, reason string) {
+	condition := meta.FindStatusCondition(credential.Status.Conditions, conditionType)
+	Expect(condition).NotTo(BeNil())
+	Expect(condition.Status).To(Equal(status))
+	Expect(condition.Reason).To(Equal(reason))
 }

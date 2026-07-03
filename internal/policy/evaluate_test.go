@@ -76,3 +76,31 @@ func TestEvaluateDeniesNamespaceEditorWhenOnlyViewerAllowed(t *testing.T) {
 		t.Fatalf("expected RoleDenied, got %#v", got)
 	}
 }
+
+func TestEvaluateDeniesNoRoles(t *testing.T) {
+	got := Evaluate(testPolicy(), CredentialRequest{Level: api.UserLevelDatabase, Database: "smoke"})
+	if got.Allowed || got.Reason != "NoRoles" {
+		t.Fatalf("expected NoRoles, got %#v", got)
+	}
+}
+
+func TestEvaluateDeniesDatabaseRequired(t *testing.T) {
+	got := Evaluate(testPolicy(), CredentialRequest{Level: api.UserLevelDatabase, Roles: []api.SurrealRole{api.RoleViewer}})
+	if got.Allowed || got.Reason != "DatabaseRequired" {
+		t.Fatalf("expected DatabaseRequired, got %#v", got)
+	}
+}
+
+func TestEvaluateDeniesDatabaseForbiddenForNamespaceUser(t *testing.T) {
+	got := Evaluate(testPolicy(), CredentialRequest{Level: api.UserLevelNamespace, Database: "smoke", Roles: []api.SurrealRole{api.RoleViewer}})
+	if got.Allowed || got.Reason != "DatabaseForbidden" {
+		t.Fatalf("expected DatabaseForbidden, got %#v", got)
+	}
+}
+
+func TestEvaluateDeniesInvalidLevel(t *testing.T) {
+	got := Evaluate(testPolicy(), CredentialRequest{Level: api.UserLevel("Project"), Roles: []api.SurrealRole{api.RoleViewer}})
+	if got.Allowed || got.Reason != "InvalidLevel" {
+		t.Fatalf("expected InvalidLevel, got %#v", got)
+	}
+}

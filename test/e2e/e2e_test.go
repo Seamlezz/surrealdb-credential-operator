@@ -106,6 +106,10 @@ spec:
     name: surrealdb-smoke-credentials
 `, appNamespace))
 
+		run("kubectl", "wait", "surrealdbprovider/e2e", "--for=condition=Ready", "--timeout=120s")
+		run("kubectl", "wait", "surrealdbtenantpolicy/smoke", "-n", appNamespace, "--for=condition=Ready", "--timeout=120s")
+		run("kubectl", "wait", "surrealdbcredential/smoke-editor", "-n", appNamespace, "--for=condition=Ready", "--timeout=120s")
+
 		Eventually(func(g Gomega) {
 			out, err := command("kubectl", "get", "secret", "surrealdb-smoke-credentials", "-n", appNamespace, "-o", "jsonpath={.data.username}").CombinedOutput()
 			g.Expect(err).NotTo(HaveOccurred(), "%s\n%s", string(out), diagnostics())
@@ -116,20 +120,57 @@ spec:
 		password := secretValue(appNamespace, "surrealdb-smoke-credentials", "password")
 		Expect(username).NotTo(BeEmpty())
 		Expect(password).NotTo(BeEmpty())
+		Expect(secretValue(appNamespace, "surrealdb-smoke-credentials", "url")).NotTo(BeEmpty())
+		Expect(secretValue(appNamespace, "surrealdb-smoke-credentials", "namespace")).To(Equal("smoke"))
+		Expect(secretValue(appNamespace, "surrealdb-smoke-credentials", "database")).To(Equal("smoke"))
+		Expect(secretValue(appNamespace, "surrealdb-smoke-credentials", "level")).To(Equal("database"))
 		Expect(secretValue(appNamespace, "surrealdb-smoke-credentials", "SURREAL_USER")).To(Equal(username))
 		Expect(secretValue(appNamespace, "surrealdb-smoke-credentials", "SURREAL_PASS")).To(Equal(password))
+		expectSurrealSignIn(username, password, true)
 
 		patch := fmt.Sprintf(`{"metadata":{"annotations":{"surrealdb.seamlezz.com/rotate-at":"%s"}}}`, time.Now().UTC().Format(time.RFC3339Nano))
 		run("kubectl", "patch", "surrealdbcredential", "smoke-editor", "-n", appNamespace, "--type=merge", "-p", patch)
 		Eventually(func(g Gomega) {
 			g.Expect(secretValue(appNamespace, "surrealdb-smoke-credentials", "password")).NotTo(Equal(password))
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		rotatedPassword := secretValue(appNamespace, "surrealdb-smoke-credentials", "password")
+		Expect(secretValue(appNamespace, "surrealdb-smoke-credentials", "SURREAL_PASS")).To(Equal(rotatedPassword))
+		expectSurrealSignIn(username, password, false)
+		expectSurrealSignIn(username, rotatedPassword, true)
 
 		run("kubectl", "delete", "surrealdbcredential", "smoke-editor", "-n", appNamespace)
 		Eventually(func(g Gomega) {
-			_, err := exec.Command("kubectl", "get", "secret", "surrealdb-smoke-credentials", "-n", appNamespace).CombinedOutput()
+			_, err := command("kubectl", "get", "secret", "surrealdb-smoke-credentials", "-n", appNamespace).CombinedOutput()
 			g.Expect(err).To(HaveOccurred())
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		expectSurrealSignIn(username, rotatedPassword, false)
+	})
+
+	It("denies disallowed database roles without creating a Secret", func() {
+		apply(fmt.Sprintf(`
+apiVersion: surrealdb.seamlezz.com/v1alpha1
+kind: SurrealDBCredential
+metadata:
+  name: smoke-owner-denied
+  namespace: %s
+spec:
+  policyRef:
+    name: smoke
+  level: Database
+  database: smoke
+  roles: [OWNER]
+  targetSecret:
+    name: surrealdb-owner-denied
+`, appNamespace))
+
+		Eventually(func(g Gomega) {
+			out, err := command("kubectl", "get", "surrealdbcredential", "smoke-owner-denied", "-n", appNamespace, "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].reason}").CombinedOutput()
+			g.Expect(err).NotTo(HaveOccurred(), string(out))
+			g.Expect(strings.TrimSpace(string(out))).To(Equal("PolicyDenied"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		_, err := command("kubectl", "get", "secret", "surrealdb-owner-denied", "-n", appNamespace).CombinedOutput()
+		Expect(err).To(HaveOccurred())
 	})
 })
 
@@ -199,6 +240,26 @@ func bootstrapSurrealNamespaceAndDatabase() {
 	for i, result := range *results {
 		Expect(result.Error).NotTo(HaveOccurred(), "SurrealQL bootstrap statement %d failed", i)
 	}
+}
+
+func expectSurrealSignIn(username, password string, shouldSucceed bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := surrealdb.FromEndpointURLString(ctx, localSurrealEndpoint())
+	Expect(err).NotTo(HaveOccurred())
+	defer func() { _ = db.Close(context.Background()) }()
+
+	_, err = db.SignIn(ctx, surrealdb.Auth{Namespace: "smoke", Database: "smoke", Username: username, Password: password})
+	if shouldSucceed {
+		Expect(err).NotTo(HaveOccurred())
+		results, err := surrealdb.Query[any](ctx, db, "RETURN true;", nil)
+		Expect(err).NotTo(HaveOccurred())
+		for i, result := range *results {
+			Expect(result.Error).NotTo(HaveOccurred(), "generated credential query %d failed", i)
+		}
+		return
+	}
+	Expect(err).To(HaveOccurred())
 }
 
 func startSurrealPortForward() {

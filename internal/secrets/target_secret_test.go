@@ -67,8 +67,19 @@ func TestExistingPassword(t *testing.T) {
 	if !ok || got != "secret" {
 		t.Fatalf("ExistingPassword = %q, %v", got, ok)
 	}
-	_, ok = ExistingPassword(&corev1.Secret{})
-	if ok {
-		t.Fatal("expected missing password")
+}
+
+func TestExistingPasswordMissingOrEmpty(t *testing.T) {
+	cases := []*corev1.Secret{
+		nil,
+		{},
+		{Data: map[string][]byte{}},
+		{Data: map[string][]byte{"password": []byte("")}},
+	}
+	for _, secret := range cases {
+		got, ok := ExistingPassword(secret)
+		if ok || got != "" {
+			t.Fatalf("ExistingPassword(%#v) = %q, %v; want empty, false", secret, got, ok)
+		}
 	}
 }

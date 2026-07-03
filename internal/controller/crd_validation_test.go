@@ -24,24 +24,29 @@ var _ = Describe("CRD validation", func() {
 	})
 
 	It("rejects invalid role enum values", func() {
-		obj := &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "surrealdb.seamlezz.com/v1alpha1",
-			"kind":       "SurrealDBCredential",
-			"metadata": map[string]any{
-				"name":      "invalid-role",
-				"namespace": "default",
-			},
-			"spec": map[string]any{
-				"policyRef": map[string]any{"name": "smoke"},
-				"level":     "Database",
-				"database":  "smoke",
-				"roles":     []any{"ADMIN"},
-				"targetSecret": map[string]any{
-					"name": "creds",
-				},
-			},
-		}}
-		obj.SetCreationTimestamp(metav1.Time{})
+		obj := credentialObject("invalid-role")
+		obj.Object["spec"].(map[string]any)["roles"] = []any{"ADMIN"}
+		err := k8sClient.Create(ctx, obj)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected invalid error, got %v", err)
+	})
+
+	It("rejects database credentials without database", func() {
+		obj := credentialObject("database-missing-db")
+		delete(obj.Object["spec"].(map[string]any), "database")
+		err := k8sClient.Create(ctx, obj)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected invalid error, got %v", err)
+	})
+
+	It("rejects namespace credentials with database", func() {
+		obj := credentialObject("namespace-with-db")
+		spec := obj.Object["spec"].(map[string]any)
+		spec["level"] = "Namespace"
+		err := k8sClient.Create(ctx, obj)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected invalid error, got %v", err)
+	})
+
+	It("rejects SurrealDBProvider empty endpoints", func() {
+		obj := providerWithEndpoint("invalid-empty", "")
 		err := k8sClient.Create(ctx, obj)
 		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected invalid error, got %v", err)
 	})
@@ -68,6 +73,28 @@ var _ = Describe("CRD validation", func() {
 		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 	})
 })
+
+func credentialObject(name string) *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "surrealdb.seamlezz.com/v1alpha1",
+		"kind":       "SurrealDBCredential",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": "default",
+		},
+		"spec": map[string]any{
+			"policyRef": map[string]any{"name": "smoke"},
+			"level":     "Database",
+			"database":  "smoke",
+			"roles":     []any{"EDITOR"},
+			"targetSecret": map[string]any{
+				"name": "creds",
+			},
+		},
+	}}
+	obj.SetCreationTimestamp(metav1.Time{})
+	return obj
+}
 
 func providerWithEndpoint(name, endpoint string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{Object: map[string]any{

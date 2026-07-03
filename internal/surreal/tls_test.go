@@ -63,6 +63,41 @@ func TestLoadTLSConfigInsecureSkipVerify(t *testing.T) {
 	}
 }
 
+func TestLoadTLSConfigLoadsClientCertificate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	certPEM, keyPEM := testClientCertPEM(t)
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "client", Namespace: "surrealdb"},
+		Data:       map[string][]byte{"tls.crt": certPEM, "tls.key": keyPEM},
+	}).Build()
+
+	cfg, err := LoadTLSConfig(context.Background(), reader, &api.ProviderTLSConfig{ClientCertificateRef: &api.ClientCertificateReference{Namespace: "surrealdb", Name: "client"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg == nil || len(cfg.Certificates) != 1 {
+		t.Fatalf("expected one client certificate, got %#v", cfg)
+	}
+}
+
+func TestLoadTLSConfigReportsInvalidCA(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "ca", Namespace: "surrealdb"},
+		Data:       map[string][]byte{"ca.crt": []byte("not pem")},
+	}).Build()
+	_, err := LoadTLSConfig(context.Background(), reader, &api.ProviderTLSConfig{CASecretRef: &api.CASecretReference{Namespace: "surrealdb", Name: "ca", Key: "ca.crt"}})
+	if err == nil {
+		t.Fatal("expected invalid CA error")
+	}
+}
+
 func testCACertPEM(t *testing.T) []byte {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -82,4 +117,25 @@ func testCACertPEM(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func testClientCertPEM(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test-client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER := x509.MarshalPKCS1PrivateKey(key)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyDER})
 }
