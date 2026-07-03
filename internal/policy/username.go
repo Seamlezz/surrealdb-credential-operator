@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
-	"unicode"
 
 	api "github.com/Seamlezz/surrealdb-credential-operator/api/v1alpha1"
 )
@@ -66,15 +65,10 @@ func normalizePart(input string) string {
 	var b strings.Builder
 	lastUnderscore := false
 	for _, r := range strings.ToLower(input) {
-		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if valid {
+		if isSimpleUsernamePart(r) {
 			b.WriteRune(r)
 			lastUnderscore = false
 			continue
-		}
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			// Non-ASCII letters/digits are intentionally collapsed to separators so
-			// generated usernames remain simple SurrealQL identifiers.
 		}
 		if !lastUnderscore {
 			b.WriteByte('_')
@@ -82,6 +76,10 @@ func normalizePart(input string) string {
 		}
 	}
 	return strings.Trim(b.String(), "_")
+}
+
+func isSimpleUsernamePart(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
 }
 
 func nonEmpty(values []string) []string {

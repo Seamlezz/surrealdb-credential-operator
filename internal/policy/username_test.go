@@ -28,6 +28,14 @@ func TestUsernameIsSimpleIdentifier(t *testing.T) {
 	}
 }
 
+func TestNormalizePartCollapsesUnicodeSeparators(t *testing.T) {
+	got := normalizePart("Team-Ångström/東京 42")
+	want := "team_ngstr_m_42"
+	if got != want {
+		t.Fatalf("normalizePart() = %q, want %q", got, want)
+	}
+}
+
 func TestUsernameHashPreventsNormalizationCollision(t *testing.T) {
 	target := UserTarget{ProviderName: "default", SurrealNamespace: "smoke", Database: "smoke", Level: api.UserLevelDatabase}
 	first := Username("smoke", "smoke-editor", target)
