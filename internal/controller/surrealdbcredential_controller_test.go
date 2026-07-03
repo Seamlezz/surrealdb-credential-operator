@@ -13,14 +13,17 @@ package controller
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"time"
 
 	surrealdbv1alpha1 "github.com/Seamlezz/surrealdb-credential-operator/api/v1alpha1"
+	operatorconditions "github.com/Seamlezz/surrealdb-credential-operator/internal/conditions"
 	"github.com/Seamlezz/surrealdb-credential-operator/internal/surreal"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,8 +31,9 @@ import (
 )
 
 type fakeAdmin struct {
-	defined []string
-	removed []string
+	defined   []string
+	removed   []string
+	removeErr error
 }
 
 func (f *fakeAdmin) DefineUser(ctx context.Context, target surreal.UserTarget, username, password string, roles []surrealdbv1alpha1.SurrealRole) error {
@@ -38,10 +42,22 @@ func (f *fakeAdmin) DefineUser(ctx context.Context, target surreal.UserTarget, u
 }
 func (f *fakeAdmin) RemoveUser(ctx context.Context, target surreal.UserTarget, username string) error {
 	f.removed = append(f.removed, username)
-	return nil
+	return f.removeErr
 }
 func (f *fakeAdmin) Ping(ctx context.Context) error  { return nil }
 func (f *fakeAdmin) Close(ctx context.Context) error { return nil }
+
+type failingSecretDeleteClient struct {
+	client.Client
+	err error
+}
+
+func (c failingSecretDeleteClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if _, ok := obj.(*corev1.Secret); ok && obj.GetName() == "surrealdb-smoke-credentials" {
+		return c.err
+	}
+	return c.Client.Delete(ctx, obj, opts...)
+}
 
 var _ = Describe("SurrealDBCredential Controller", func() {
 	ctx := context.Background()
@@ -121,11 +137,104 @@ var _ = Describe("SurrealDBCredential Controller", func() {
 		err = k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "surrealdb-smoke-credentials"}, secret)
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	})
+
+	It("keeps the finalizer and records status when normal target Secret deletion fails", func() {
+		ns := "cred-secret-delete-fails"
+		admin := &fakeAdmin{}
+		createCredentialFixture(ctx, ns)
+		deleteErr := errors.New("delete failed")
+		reconciler := testCredentialReconcilerWithClient(admin, failingSecretDeleteClient{Client: k8sClient, err: deleteErr})
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "smoke-editor"}}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		cred := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, cred)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, cred)).To(Succeed())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).To(MatchError(deleteErr))
+
+		updated := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, updated)).To(Succeed())
+		Expect(updated.Finalizers).To(ContainElement(credentialFinalizer))
+		ready := meta.FindStatusCondition(updated.Status.Conditions, operatorconditions.TypeReady)
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		Expect(ready.Reason).To(Equal(operatorconditions.ReasonSecretDeleteFailed))
+		secretReady := meta.FindStatusCondition(updated.Status.Conditions, operatorconditions.TypeSecretReady)
+		Expect(secretReady).NotTo(BeNil())
+		Expect(secretReady.Status).To(Equal(metav1.ConditionFalse))
+		Expect(secretReady.Reason).To(Equal(operatorconditions.ReasonSecretDeleteFailed))
+	})
+
+	It("force cleanup skips SurrealDB removal and removes the finalizer despite target Secret deletion failure", func() {
+		ns := "cred-force-secret-delete-fails"
+		admin := &fakeAdmin{}
+		createCredentialFixture(ctx, ns)
+		deleteErr := errors.New("delete failed")
+		reconciler := testCredentialReconcilerWithClient(admin, failingSecretDeleteClient{Client: k8sClient, err: deleteErr})
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "smoke-editor"}}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		cred := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, cred)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, cred)).To(Succeed())
+
+		terminating := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, terminating)).To(Succeed())
+		terminating.Annotations = map[string]string{annotationForceCleanup: "true"}
+		Expect(k8sClient.Update(ctx, terminating)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(admin.removed).To(BeEmpty())
+		Eventually(func(g Gomega) {
+			deleted := &surrealdbv1alpha1.SurrealDBCredential{}
+			err := k8sClient.Get(ctx, req.NamespacedName, deleted)
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		}).Should(Succeed())
+	})
+
+	It("keeps the finalizer and records status when SurrealDB user removal fails", func() {
+		ns := "cred-remove-user-fails"
+		removeErr := errors.New("remove failed")
+		admin := &fakeAdmin{removeErr: removeErr}
+		createCredentialFixture(ctx, ns)
+		reconciler := testCredentialReconciler(admin)
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "smoke-editor"}}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		cred := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, cred)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, cred)).To(Succeed())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).To(MatchError(removeErr))
+
+		updated := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, updated)).To(Succeed())
+		Expect(updated.Finalizers).To(ContainElement(credentialFinalizer))
+		ready := meta.FindStatusCondition(updated.Status.Conditions, operatorconditions.TypeReady)
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		Expect(ready.Reason).To(Equal(operatorconditions.ReasonRemoveUserFailed))
+	})
 })
 
 func testCredentialReconciler(admin *fakeAdmin) *SurrealDBCredentialReconciler {
+	return testCredentialReconcilerWithClient(admin, k8sClient)
+}
+
+func testCredentialReconcilerWithClient(admin *fakeAdmin, c client.Client) *SurrealDBCredentialReconciler {
 	return &SurrealDBCredentialReconciler{
-		Client: k8sClient,
+		Client: c,
 		Scheme: k8sClient.Scheme(),
 		Clock:  func() time.Time { return time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC) },
 		AdminFactory: func(ctx context.Context, endpoint, username, password string, tlsConfig *tls.Config) (surreal.Admin, error) {

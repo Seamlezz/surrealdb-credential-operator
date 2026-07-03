@@ -235,13 +235,19 @@ func (r *SurrealDBCredentialReconciler) resolve(ctx context.Context, credential 
 }
 
 func (r *SurrealDBCredentialReconciler) reconcileDelete(ctx context.Context, credential *surrealdbv1alpha1.SurrealDBCredential) (ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+
 	if !controllerutil.ContainsFinalizer(credential, credentialFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	if credential.Annotations[annotationForceCleanup] == "true" {
-		_ = r.deleteOwnedTargetSecret(ctx, credential)
-		controllerutil.RemoveFinalizer(credential, credentialFinalizer)
-		return ctrl.Result{}, r.Update(ctx, credential)
+		if err := r.deleteOwnedTargetSecret(ctx, credential); err != nil {
+			targetSecret := types.NamespacedName{Namespace: credential.Namespace, Name: credential.Spec.TargetSecret.Name}
+			msg := fmt.Sprintf("force cleanup could not delete owned target Secret %s: %v; removing finalizer anyway", targetSecret.String(), err)
+			logger.Error(err, "Force cleanup could not delete owned target Secret", "credential", client.ObjectKeyFromObject(credential), "targetSecret", targetSecret)
+			r.recordDeleteFailure(ctx, credential, operatorconditions.ReasonSecretDeleteFailed, msg, true)
+		}
+		return r.removeCredentialFinalizer(ctx, credential)
 	}
 
 	resolved, ok, err := r.resolve(ctx, credential)
@@ -250,21 +256,47 @@ func (r *SurrealDBCredentialReconciler) reconcileDelete(ctx context.Context, cre
 	}
 	admin, err := r.newAdmin(ctx, resolved.Provider, resolved.RootUsername, resolved.RootPassword, resolved.TLSConfig)
 	if err != nil {
-		operatorconditions.NotReady(&credential.Status.Conditions, credential.Generation, operatorconditions.ReasonSurrealDBUnavailable, err.Error())
-		_ = r.Status().Update(ctx, credential)
+		r.recordDeleteFailure(ctx, credential, operatorconditions.ReasonSurrealDBUnavailable, err.Error(), false)
 		return ctrl.Result{}, err
 	}
 	defer func() { _ = admin.Close(ctx) }()
 	if err := admin.RemoveUser(ctx, resolved.SurrealTarget, resolved.Username); err != nil {
-		operatorconditions.NotReady(&credential.Status.Conditions, credential.Generation, operatorconditions.ReasonRemoveUserFailed, err.Error())
-		_ = r.Status().Update(ctx, credential)
+		r.recordDeleteFailure(ctx, credential, operatorconditions.ReasonRemoveUserFailed, err.Error(), false)
 		return ctrl.Result{}, err
 	}
 	if err := r.deleteOwnedTargetSecret(ctx, credential); err != nil {
+		targetSecret := types.NamespacedName{Namespace: credential.Namespace, Name: credential.Spec.TargetSecret.Name}
+		msg := fmt.Sprintf("failed to delete owned target Secret %s: %v", targetSecret.String(), err)
+		r.recordDeleteFailure(ctx, credential, operatorconditions.ReasonSecretDeleteFailed, msg, true)
 		return ctrl.Result{}, err
 	}
-	controllerutil.RemoveFinalizer(credential, credentialFinalizer)
-	return ctrl.Result{}, r.Update(ctx, credential)
+	return r.removeCredentialFinalizer(ctx, credential)
+}
+
+func (r *SurrealDBCredentialReconciler) recordDeleteFailure(ctx context.Context, credential *surrealdbv1alpha1.SurrealDBCredential, reason, message string, markSecret bool) {
+	logger := logf.FromContext(ctx)
+
+	credential.Status.ObservedGeneration = credential.Generation
+	operatorconditions.NotReady(&credential.Status.Conditions, credential.Generation, reason, message)
+	if markSecret {
+		operatorconditions.Set(&credential.Status.Conditions, credential.Generation, operatorconditions.TypeSecretReady, metav1.ConditionFalse, reason, message)
+	}
+
+	if err := r.Status().Update(ctx, credential); err != nil {
+		logger.Error(err, "Failed to update SurrealDBCredential delete failure status", "credential", client.ObjectKeyFromObject(credential), "reason", reason)
+	}
+}
+
+func (r *SurrealDBCredentialReconciler) removeCredentialFinalizer(ctx context.Context, credential *surrealdbv1alpha1.SurrealDBCredential) (ctrl.Result, error) {
+	latest := &surrealdbv1alpha1.SurrealDBCredential{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(credential), latest); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if !controllerutil.ContainsFinalizer(latest, credentialFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	controllerutil.RemoveFinalizer(latest, credentialFinalizer)
+	return ctrl.Result{}, r.Update(ctx, latest)
 }
 
 func (r *SurrealDBCredentialReconciler) loadRootCredentials(ctx context.Context, provider *surrealdbv1alpha1.SurrealDBProvider) (string, string, bool, error) {

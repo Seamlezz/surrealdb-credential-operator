@@ -22,6 +22,7 @@ const (
 	ReasonProviderSecretInvalid  = "ProviderSecretInvalid"
 	ReasonPolicyNotFound         = "PolicyNotFound"
 	ReasonSecretConflict         = "SecretConflict"
+	ReasonSecretDeleteFailed     = "SecretDeleteFailed"
 	ReasonTargetNotFound         = "TargetNotFound"
 	ReasonSurrealDBUnavailable   = "SurrealDBUnavailable"
 	ReasonDefineUserFailed       = "DefineUserFailed"
