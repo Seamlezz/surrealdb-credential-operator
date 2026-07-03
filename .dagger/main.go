@@ -111,7 +111,36 @@ func (m *SurrealdbCredentialOperator) BuildImage(ctx context.Context,
 			return nil, err
 		}
 	}
-	return m.Source.DockerBuild(dagger.DirectoryDockerBuildOpts{Platform: platform}), nil
+
+	goos, goarch, err := goTarget(platform)
+	if err != nil {
+		return nil, err
+	}
+
+	binary := dag.Container().From("golang:1.24").
+		WithDirectory(workspace, m.Source).
+		WithWorkdir(workspace).
+		WithEnvVariable("CGO_ENABLED", "0").
+		WithEnvVariable("GOOS", goos).
+		WithEnvVariable("GOARCH", goarch).
+		WithExec([]string{"go", "mod", "download"}).
+		WithExec([]string{"go", "build", "-a", "-o", "manager", "cmd/main.go"}).
+		File("/workspace/manager")
+
+	return dag.Container(dagger.ContainerOpts{Platform: platform}).
+		From("gcr.io/distroless/static:nonroot").
+		WithWorkdir("/").
+		WithFile("/manager", binary).
+		WithUser("65532:65532").
+		WithEntrypoint([]string{"/manager"}), nil
+}
+
+func goTarget(platform dagger.Platform) (string, string, error) {
+	goos, goarch, ok := strings.Cut(string(platform), "/")
+	if !ok || goos == "" || goarch == "" {
+		return "", "", fmt.Errorf("invalid platform %q", platform)
+	}
+	return goos, goarch, nil
 }
 
 func (m *SurrealdbCredentialOperator) PublishImage(ctx context.Context,
