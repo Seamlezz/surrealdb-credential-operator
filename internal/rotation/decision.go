@@ -63,15 +63,21 @@ func computeNext(now time.Time, lastRotationTime, nextRotationTime *metav1.Time,
 	if period == nil {
 		return nil
 	}
-	if nextRotationTime != nil {
-		copy := *nextRotationTime
-		return &copy
-	}
+
 	base := now
 	if lastRotationTime != nil {
 		base = lastRotationTime.Time
 	}
-	return timePtr(base.Add(period.Duration))
+	candidate := timePtr(base.Add(period.Duration))
+
+	if nextRotationTime == nil {
+		return candidate
+	}
+	if nextRotationTime.Time.Before(candidate.Time) || nextRotationTime.Time.Equal(candidate.Time) {
+		copy := *nextRotationTime
+		return &copy
+	}
+	return candidate
 }
 
 func timePtr(t time.Time) *metav1.Time {

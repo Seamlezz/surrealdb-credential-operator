@@ -225,6 +225,8 @@ spec:
     period: 720h
 ```
 
+When `spec.rotation.period` changes, the controller recalculates the next scheduled rotation from the last rotation time. Shortening the period can move `status.nextRotationTime` earlier. Lengthening the period does not delay an already scheduled earlier rotation; the longer period applies after the next rotation completes.
+
 ### Delete credential
 
 ```bash

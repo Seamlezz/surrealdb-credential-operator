@@ -64,3 +64,52 @@ func TestDecideReusesBeforeScheduleDue(t *testing.T) {
 		t.Fatalf("action = %s, want %s", got.Action, ActionReuse)
 	}
 }
+
+func TestDecideAdvancesNextRotationWhenPeriodShortens(t *testing.T) {
+	now := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
+	last := metav1.NewTime(now.Add(-24 * time.Hour))
+	oldNext := metav1.NewTime(last.Time.Add(30 * 24 * time.Hour))
+	period := metav1.Duration{Duration: 7 * 24 * time.Hour}
+
+	got := Decide(now, true, nil, "", &last, &oldNext, &period)
+	want := last.Time.Add(7 * 24 * time.Hour)
+
+	if got.Action != ActionReuse {
+		t.Fatalf("action = %s, want %s", got.Action, ActionReuse)
+	}
+	if got.NextRotationTime == nil || !got.NextRotationTime.Time.Equal(want) {
+		t.Fatalf("next rotation = %v, want %v", got.NextRotationTime, want)
+	}
+}
+
+func TestDecideKeepsEarlierNextRotationWhenPeriodLengthens(t *testing.T) {
+	now := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
+	last := metav1.NewTime(now.Add(-24 * time.Hour))
+	oldNext := metav1.NewTime(last.Time.Add(7 * 24 * time.Hour))
+	period := metav1.Duration{Duration: 30 * 24 * time.Hour}
+
+	got := Decide(now, true, nil, "", &last, &oldNext, &period)
+
+	if got.Action != ActionReuse {
+		t.Fatalf("action = %s, want %s", got.Action, ActionReuse)
+	}
+	if got.NextRotationTime == nil || !got.NextRotationTime.Time.Equal(oldNext.Time) {
+		t.Fatalf("next rotation = %v, want %v", got.NextRotationTime, oldNext.Time)
+	}
+}
+
+func TestDecideComputesNextRotationWhenMissingFromStatus(t *testing.T) {
+	now := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
+	last := metav1.NewTime(now.Add(-24 * time.Hour))
+	period := metav1.Duration{Duration: 7 * 24 * time.Hour}
+
+	got := Decide(now, true, nil, "", &last, nil, &period)
+	want := last.Time.Add(7 * 24 * time.Hour)
+
+	if got.Action != ActionReuse {
+		t.Fatalf("action = %s, want %s", got.Action, ActionReuse)
+	}
+	if got.NextRotationTime == nil || !got.NextRotationTime.Time.Equal(want) {
+		t.Fatalf("next rotation = %v, want %v", got.NextRotationTime, want)
+	}
+}
