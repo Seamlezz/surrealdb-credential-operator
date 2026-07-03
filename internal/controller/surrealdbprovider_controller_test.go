@@ -26,7 +26,7 @@ var _ = Describe("SurrealDBProvider Controller", func() {
 		ns := "provider-ready"
 		createIgnoringAlreadyExists(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		Expect(k8sClient.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "root", Namespace: ns}, Data: map[string][]byte{"username": []byte("root"), "password": []byte("rootpass")}})).To(Succeed())
-		provider := &surrealdbv1alpha1.SurrealDBProvider{ObjectMeta: metav1.ObjectMeta{Name: "provider-ready"}, Spec: surrealdbv1alpha1.SurrealDBProviderSpec{Endpoint: "http://surrealdb:8000", RootCredentialRef: surrealdbv1alpha1.RootCredentialReference{Namespace: ns, Name: "root"}}}
+		provider := &surrealdbv1alpha1.SurrealDBProvider{ObjectMeta: metav1.ObjectMeta{Name: "provider-ready"}, Spec: surrealdbv1alpha1.SurrealDBProviderSpec{Endpoint: "ws://surrealdb:8000", RootCredentialRef: surrealdbv1alpha1.RootCredentialReference{Namespace: ns, Name: "root"}}}
 		Expect(k8sClient.Create(ctx, provider)).To(Succeed())
 
 		reconciler := &SurrealDBProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
@@ -36,5 +36,14 @@ var _ = Describe("SurrealDBProvider Controller", func() {
 		latest := &surrealdbv1alpha1.SurrealDBProvider{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: provider.Name}, latest)).To(Succeed())
 		Expect(latest.Status.Conditions).NotTo(BeEmpty())
+	})
+
+	It("rejects HTTP endpoints during provider validation", func() {
+		provider := &surrealdbv1alpha1.SurrealDBProvider{Spec: surrealdbv1alpha1.SurrealDBProviderSpec{Endpoint: "http://surrealdb:8000"}}
+		reconciler := &SurrealDBProviderReconciler{}
+
+		err := reconciler.validateProvider(ctx, provider)
+
+		Expect(err).To(MatchError(ContainSubstring("use ws:// or wss:// endpoints")))
 	})
 })

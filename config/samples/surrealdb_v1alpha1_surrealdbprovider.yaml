@@ -6,4 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: surrealdbprovider-sample
 spec:
-  # TODO(user): Add fields here
+  endpoint: ws://surrealdb:8000
+  rootCredentialRef:
+    namespace: platform-secrets
+    name: surrealdb-root

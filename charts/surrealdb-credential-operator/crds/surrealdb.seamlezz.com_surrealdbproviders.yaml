@@ -41,11 +41,11 @@ spec:
             properties:
               endpoint:
                 description: |-
-                  Endpoint is the SurrealDB HTTP(S) or WS(S) endpoint used by the controller.
-                  Examples: https://surrealdb.surrealdb.svc.cluster.local:8000, ws://surrealdb:8000/rpc.
+                  Endpoint is the SurrealDB WS(S) endpoint used by the controller.
+                  Examples: ws://surrealdb.surrealdb.svc.cluster.local:8000, wss://surrealdb.example.com/rpc.
                 maxLength: 2048
                 minLength: 1
-                pattern: ^(https?|wss?)://.+
+                pattern: ^wss?://.+
                 type: string
               rootCredentialRef:
                 description: RootCredentialRef references the Kubernetes Secret containing

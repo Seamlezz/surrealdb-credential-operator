@@ -70,6 +70,10 @@ func (r *SurrealDBProviderReconciler) Reconcile(ctx context.Context, req ctrl.Re
 }
 
 func (r *SurrealDBProviderReconciler) validateProvider(ctx context.Context, provider *surrealdbv1alpha1.SurrealDBProvider) error {
+	if err := surreal.ValidateEndpointScheme(provider.Spec.Endpoint); err != nil {
+		return err
+	}
+
 	secret := &corev1.Secret{}
 	ref := provider.Spec.RootCredentialRef
 	if err := r.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}, secret); err != nil {

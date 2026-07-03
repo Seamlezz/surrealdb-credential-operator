@@ -22,11 +22,11 @@ import (
 
 // SurrealDBProviderSpec defines a platform-owned connection to a SurrealDB instance.
 type SurrealDBProviderSpec struct {
-	// Endpoint is the SurrealDB HTTP(S) or WS(S) endpoint used by the controller.
-	// Examples: https://surrealdb.surrealdb.svc.cluster.local:8000, ws://surrealdb:8000/rpc.
+	// Endpoint is the SurrealDB WS(S) endpoint used by the controller.
+	// Examples: ws://surrealdb.surrealdb.svc.cluster.local:8000, wss://surrealdb.example.com/rpc.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:Pattern=`^(https?|wss?)://.+`
+	// +kubebuilder:validation:Pattern=`^wss?://.+`
 	Endpoint string `json:"endpoint"`
 
 	// RootCredentialRef references the Kubernetes Secret containing SurrealDB admin credentials.

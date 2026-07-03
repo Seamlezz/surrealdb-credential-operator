@@ -86,7 +86,7 @@ kind: SurrealDBProvider
 metadata:
   name: primary
 spec:
-  endpoint: http://surrealdb.surrealdb.svc.cluster.local:8000
+  endpoint: ws://surrealdb.surrealdb.svc.cluster.local:8000
   rootCredentialRef:
     namespace: platform-secrets
     name: surrealdb-root
@@ -248,7 +248,7 @@ kubectl annotate surrealdbcredential app \
 
 Cluster scoped object owned by platform team. It points to a SurrealDB endpoint and a Kubernetes Secret with admin credentials. Default Secret keys are `username` and `password`.
 
-Provider endpoints accept `http`, `https`, `ws`, and `wss`. When no custom TLS config is set, HTTP endpoints are converted to matching WebSocket endpoints for SurrealDB session behavior. Custom TLS config currently supports HTTP and HTTPS endpoints only.
+Provider endpoints accept `ws` and `wss`. The operator requires WebSocket connectivity to SurrealDB and does not silently rewrite HTTP(S) endpoints. Use `ws://` for plaintext connections and `wss://` for TLS termination with standard trust.
 
 ### `SurrealDBTenantPolicy`
 
@@ -279,23 +279,7 @@ Common values:
 - `resources`: Pod resource requests and limits.
 - `nodeSelector`, `tolerations`, `affinity`: scheduling controls.
 
-Provider TLS options:
-
-```yaml
-spec:
-  tls:
-    caSecretRef:
-      namespace: platform-secrets
-      name: surrealdb-ca
-      key: ca.crt
-    clientCertificateRef:
-      namespace: platform-secrets
-      name: surrealdb-client-cert
-      certKey: tls.crt
-      keyKey: tls.key
-```
-
-Do not use `insecureSkipVerify: true` outside local development.
+Provider custom TLS material (`spec.tls`) is not currently supported by the WebSocket admin client. For encrypted connections with standard system trust, expose SurrealDB over `wss://` and omit `spec.tls`. Custom CA or client certificate support for WebSocket endpoints requires a future implementation.
 
 ## Troubleshooting
 
@@ -335,11 +319,17 @@ Meaning: operator refuses to overwrite a Secret it does not own.
 
 Fix: choose another `targetSecret.name`, or delete existing Secret after confirming it is safe.
 
-### `custom TLS config is currently supported only for http/https endpoints`
+### `unsupported SurrealDB provider endpoint scheme "http": use ws:// or wss:// endpoints`
 
-Meaning: provider uses `ws` or `wss` with `spec.tls`.
+Meaning: provider uses an HTTP(S) endpoint. The operator requires WebSocket connectivity for SurrealDB admin operations.
 
-Fix: use `http` or `https` endpoint when custom TLS config is needed.
+Fix: change `spec.endpoint` to `ws://...` or `wss://...` and make sure any proxy or ingress allows WebSocket upgrades.
+
+### `custom TLS config is not currently supported for wss endpoints`
+
+Meaning: provider uses `spec.tls` with a WebSocket endpoint.
+
+Fix: omit `spec.tls` and use `wss://` with certificates trusted by the controller container's system trust store. Custom CA/client certificate WebSocket support is not implemented yet.
 
 ### Credential never becomes ready
 

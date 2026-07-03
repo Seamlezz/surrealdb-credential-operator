@@ -21,11 +21,11 @@ func testCredential() *api.SurrealDBCredential {
 
 func TestBuildTargetSecretIncludesCanonicalKeysAndAliases(t *testing.T) {
 	secret := BuildTargetSecret(testCredential(), ConnectionData{
-		URL: "https://surrealdb", Namespace: "smoke", Database: "smoke", Username: "user", Password: "pass", Level: "database",
+		URL: "ws://surrealdb", Namespace: "smoke", Database: "smoke", Username: "user", Password: "pass", Level: "database",
 	})
 	want := map[string]string{
-		"url": "https://surrealdb", "namespace": "smoke", "database": "smoke", "username": "user", "password": "pass", "level": "database",
-		"SURREAL_URL": "https://surrealdb", "SURREAL_NS": "smoke", "SURREAL_DB": "smoke", "SURREAL_USER": "user", "SURREAL_PASS": "pass",
+		"url": "ws://surrealdb", "namespace": "smoke", "database": "smoke", "username": "user", "password": "pass", "level": "database",
+		"SURREAL_URL": "ws://surrealdb", "SURREAL_NS": "smoke", "SURREAL_DB": "smoke", "SURREAL_USER": "user", "SURREAL_PASS": "pass",
 	}
 	for key, value := range want {
 		if string(secret.Data[key]) != value {

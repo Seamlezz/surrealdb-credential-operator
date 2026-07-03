@@ -4,16 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	api "github.com/Seamlezz/surrealdb-credential-operator/api/v1alpha1"
 	surrealdb "github.com/surrealdb/surrealdb.go"
-	"github.com/surrealdb/surrealdb.go/pkg/connection"
-	surrealhttp "github.com/surrealdb/surrealdb.go/pkg/connection/http"
 )
 
 // Admin manages SurrealDB system users.
@@ -49,33 +44,14 @@ func NewAdminClientWithTLS(ctx context.Context, endpoint, username, password str
 }
 
 func openDB(ctx context.Context, endpoint string, tlsConfig *tls.Config) (*surrealdb.DB, error) {
-	u, err := url.ParseRequestURI(endpoint)
+	u, err := ParseEndpointURL(endpoint)
 	if err != nil {
 		return nil, err
 	}
-	if tlsConfig == nil {
-		// The SurrealDB Go SDK HTTP transport requires namespace/database headers even
-		// for root sign-in. Accept platform-friendly HTTP(S) provider URLs, but use
-		// the equivalent WebSocket endpoint for RPC/session semantics.
-		switch u.Scheme {
-		case "http":
-			u.Scheme = "ws"
-		case "https":
-			u.Scheme = "wss"
-		}
-		return surrealdb.FromEndpointURLString(ctx, u.String())
+	if tlsConfig != nil {
+		return nil, fmt.Errorf("custom TLS config is not currently supported for %s endpoints", u.Scheme)
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("custom TLS config is currently supported only for http/https endpoints, got %q", u.Scheme)
-	}
-	conf := connection.NewConfig(u)
-	if err := conf.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid connection config: %w", err)
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = tlsConfig
-	con := surrealhttp.New(conf).SetHTTPClient(&http.Client{Timeout: 30 * time.Second, Transport: transport})
-	return surrealdb.FromConnection(ctx, con)
+	return surrealdb.FromEndpointURLString(ctx, u.String())
 }
 
 // DefineUser creates or overwrites a SurrealDB system user.
