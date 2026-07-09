@@ -45,6 +45,8 @@ const (
 	annotationForceCleanup = "surrealdb.seamlezz.com/force-cleanup"
 )
 
+var surrealDBUnavailableRequeue = ctrl.Result{Requeue: true}
+
 // AdminFactory creates a SurrealDB admin client.
 type AdminFactory func(ctx context.Context, endpoint, username, password string, tlsConfig *tls.Config) (surreal.Admin, error)
 
@@ -124,7 +126,10 @@ func (r *SurrealDBCredentialReconciler) Reconcile(ctx context.Context, req ctrl.
 	admin, err := r.newAdmin(ctx, resolved.Provider, resolved.RootUsername, resolved.RootPassword, resolved.TLSConfig)
 	if err != nil {
 		operatorconditions.NotReady(&credential.Status.Conditions, credential.Generation, operatorconditions.ReasonSurrealDBUnavailable, err.Error())
-		return ctrl.Result{}, r.Status().Update(ctx, credential)
+		if updateErr := r.Status().Update(ctx, credential); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return surrealDBUnavailableRequeue, nil
 	}
 	defer func() { _ = admin.Close(ctx) }()
 
@@ -257,7 +262,7 @@ func (r *SurrealDBCredentialReconciler) reconcileDelete(ctx context.Context, cre
 	admin, err := r.newAdmin(ctx, resolved.Provider, resolved.RootUsername, resolved.RootPassword, resolved.TLSConfig)
 	if err != nil {
 		r.recordDeleteFailure(ctx, credential, operatorconditions.ReasonSurrealDBUnavailable, err.Error(), false)
-		return ctrl.Result{}, err
+		return surrealDBUnavailableRequeue, nil
 	}
 	defer func() { _ = admin.Close(ctx) }()
 	if err := admin.RemoveUser(ctx, resolved.SurrealTarget, resolved.Username); err != nil {

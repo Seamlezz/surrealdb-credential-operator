@@ -338,6 +338,63 @@ var _ = Describe("SurrealDBCredential Controller", func() {
 		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 		Expect(ready.Reason).To(Equal(operatorconditions.ReasonRemoveUserFailed))
 	})
+
+	It("requeues when SurrealDB is unavailable during reconcile", func() {
+		ns := "cred-surreal-unavailable"
+		unavailableErr := errors.New("connect refused")
+		createCredentialFixture(ctx, ns)
+		reconciler := testCredentialReconcilerWithAdminFactory(
+			func(ctx context.Context, endpoint, username, password string, tlsConfig *tls.Config) (surreal.Admin, error) {
+				return nil, unavailableErr
+			},
+		)
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "smoke-editor"}}
+
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		result, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).NotTo(Equal(reconcile.Result{}))
+		Expect(result.Requeue).To(BeTrue())
+
+		latest := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, latest)).To(Succeed())
+		expectCredentialCondition(latest, operatorconditions.TypeReady, metav1.ConditionFalse, operatorconditions.ReasonSurrealDBUnavailable)
+	})
+
+	It("requeues and keeps the finalizer when SurrealDB is unavailable during delete", func() {
+		ns := "cred-delete-surreal-unavailable"
+		unavailableErr := errors.New("connect refused")
+		createCredentialFixture(ctx, ns)
+
+		admin := &fakeAdmin{}
+		reconciler := testCredentialReconciler(admin)
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "smoke-editor"}}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		failingReconciler := testCredentialReconcilerWithAdminFactory(
+			func(ctx context.Context, endpoint, username, password string, tlsConfig *tls.Config) (surreal.Admin, error) {
+				return nil, unavailableErr
+			},
+		)
+
+		cred := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, cred)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, cred)).To(Succeed())
+
+		result, err := failingReconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).NotTo(Equal(reconcile.Result{}))
+		Expect(result.Requeue).To(BeTrue())
+
+		updated := &surrealdbv1alpha1.SurrealDBCredential{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, updated)).To(Succeed())
+		Expect(updated.Finalizers).To(ContainElement(credentialFinalizer))
+		expectCredentialCondition(updated, operatorconditions.TypeReady, metav1.ConditionFalse, operatorconditions.ReasonSurrealDBUnavailable)
+	})
 })
 
 func testCredentialReconciler(admin *fakeAdmin) *SurrealDBCredentialReconciler {
@@ -352,6 +409,15 @@ func testCredentialReconcilerWithClient(admin *fakeAdmin, c client.Client) *Surr
 		AdminFactory: func(ctx context.Context, endpoint, username, password string, tlsConfig *tls.Config) (surreal.Admin, error) {
 			return admin, nil
 		},
+	}
+}
+
+func testCredentialReconcilerWithAdminFactory(factory AdminFactory) *SurrealDBCredentialReconciler {
+	return &SurrealDBCredentialReconciler{
+		Client:       k8sClient,
+		Scheme:       k8sClient.Scheme(),
+		Clock:        func() time.Time { return time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC) },
+		AdminFactory: factory,
 	}
 }
 
