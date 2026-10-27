@@ -52,6 +52,20 @@ var _ = Describe("SurrealDBProvider Controller", func() {
 		Expect(ready.Reason).To(Equal(operatorconditions.ReasonProviderSecretInvalid))
 	})
 
+	It("requeues a provider when its referenced Secret appears", func() {
+		ns := "provider-secret-watch"
+		createIgnoringAlreadyExists(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+		provider := &surrealdbv1alpha1.SurrealDBProvider{ObjectMeta: metav1.ObjectMeta{Name: "provider-secret-watch"}, Spec: surrealdbv1alpha1.SurrealDBProviderSpec{Endpoint: "ws://surrealdb:8000", RootCredentialRef: surrealdbv1alpha1.RootCredentialReference{Namespace: ns, Name: "root"}}}
+		Expect(k8sClient.Create(ctx, provider)).To(Succeed())
+		reconciler := &SurrealDBProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+		matching := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "root"}}
+		Expect(reconciler.providersForSecret(ctx, matching)).To(ContainElement(reconcile.Request{NamespacedName: types.NamespacedName{Name: provider.Name}}))
+
+		other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "other"}}
+		Expect(reconciler.providersForSecret(ctx, other)).NotTo(ContainElement(reconcile.Request{NamespacedName: types.NamespacedName{Name: provider.Name}}))
+	})
+
 	It("marks provider not ready when root Secret username is missing", func() {
 		ns := "provider-missing-username"
 		createProviderRootSecret(ctx, ns, "root", map[string][]byte{"password": []byte("rootpass")})

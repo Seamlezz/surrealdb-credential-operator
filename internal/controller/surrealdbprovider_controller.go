@@ -29,7 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // SurrealDBProviderReconciler reconciles a SurrealDBProvider object.
@@ -102,10 +104,47 @@ func (r *SurrealDBProviderReconciler) validateProvider(ctx context.Context, prov
 	return nil
 }
 
+// referencedSecrets lists every Secret a provider's validation reads.
+func referencedSecrets(provider *surrealdbv1alpha1.SurrealDBProvider) []types.NamespacedName {
+	ref := provider.Spec.RootCredentialRef
+	secrets := []types.NamespacedName{{Namespace: ref.Namespace, Name: ref.Name}}
+	if tls := provider.Spec.TLS; tls != nil {
+		if tls.CASecretRef != nil {
+			secrets = append(secrets, types.NamespacedName{Namespace: tls.CASecretRef.Namespace, Name: tls.CASecretRef.Name})
+		}
+		if tls.ClientCertificateRef != nil {
+			secrets = append(secrets, types.NamespacedName{Namespace: tls.ClientCertificateRef.Namespace, Name: tls.ClientCertificateRef.Name})
+		}
+	}
+	return secrets
+}
+
+// providersForSecret requeues the providers that reference a Secret, so a provider created
+// before its Secret becomes Ready as soon as the Secret appears or changes.
+func (r *SurrealDBProviderReconciler) providersForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	providers := &surrealdbv1alpha1.SurrealDBProviderList{}
+	if err := r.List(ctx, providers); err != nil {
+		logf.FromContext(ctx).Error(err, "List providers for Secret", "secret", client.ObjectKeyFromObject(obj))
+		return nil
+	}
+	secret := client.ObjectKeyFromObject(obj)
+	var requests []reconcile.Request
+	for i := range providers.Items {
+		for _, ref := range referencedSecrets(&providers.Items[i]) {
+			if ref == secret {
+				requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: providers.Items[i].Name}})
+				break
+			}
+		}
+	}
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *SurrealDBProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&surrealdbv1alpha1.SurrealDBProvider{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.providersForSecret)).
 		Named("surrealdbprovider").
 		Complete(r)
 }
