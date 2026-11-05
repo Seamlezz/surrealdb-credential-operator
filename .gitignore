@@ -36,3 +36,8 @@ go.work.sum
 # .vscode/
 
 docs/
+
+# devenv
+.devenv/
+.devenv.flake.nix
+devenv.lock.bak

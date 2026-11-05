@@ -24,32 +24,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Dagger check
-        uses: memospot/action-dagger@v1
-        with:
-          version: "latest"
-          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
-          module: .
-          call: check
+      - uses: ./.github/actions/devenv
+      - run: devenv shell -- check
 
   e2e:
     needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Dagger e2e
-        uses: memospot/action-dagger@v1
-        with:
-          version: "latest"
-          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
-          module: .
-          call: e-2-e
+      - uses: ./.github/actions/devenv
+      - run: devenv shell -- test-e2e
 
   publish:
     needs: [check, e2e]
     runs-on: ubuntu-latest
+    env:
+      GHCR_USERNAME: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/devenv
       - name: Resolve tag
         id: tag
         shell: bash
@@ -57,16 +51,6 @@ jobs:
           tag="${{ inputs.tag }}"
           if [ -z "$tag" ]; then tag="${GITHUB_REF_NAME}"; fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+      - run: devenv shell -- ghcr-login
       - name: Publish release image and chart
-        uses: memospot/action-dagger@v1
-        with:
-          version: "latest"
-          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
-          module: .
-          call: >-
-            publish
-            --tag=${{ steps.tag.outputs.tag }}
-            --username=${{ github.actor }}
-            --password=env:GITHUB_TOKEN
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: devenv shell -- publish "${{ steps.tag.outputs.tag }}"

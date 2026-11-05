@@ -36,11 +36,11 @@ var _ = Describe("SurrealDB credential lifecycle", Ordered, func() {
 			projectImage = img
 		}
 		waitForKubernetes()
-		run("make", "install")
+		run("install-crds")
 		if os.Getenv("E2E_LOCAL_MANAGER") == "true" {
 			startLocalManager()
 		} else {
-			run("make", "deploy", "IMG="+projectImage)
+			run("env", "IMG="+projectImage, "deploy")
 			wait("deployment/surrealdb-credential-operator-controller-manager", operatorNamespace)
 		}
 		installSurrealDB()
@@ -54,7 +54,7 @@ var _ = Describe("SurrealDB credential lifecycle", Ordered, func() {
 		runAllowFail("kubectl", "delete", "ns", surrealNamespace, "--ignore-not-found", "--wait=false")
 		stopLocalManager()
 		if os.Getenv("E2E_LOCAL_MANAGER") != "true" {
-			runAllowFail("make", "undeploy")
+			runAllowFail("undeploy")
 		}
 		runAllowFail("kubectl", "delete", "crd",
 			"surrealdbcredentials.surrealdb.seamlezz.com",

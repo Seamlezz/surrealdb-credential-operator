@@ -42,7 +42,7 @@ Generated Secret keys include:
 ## Requirements
 
 - Kubernetes 1.31 or newer for Helm chart installs.
-- Helm 3 for chart install, or `kubectl`, `kustomize`, and `make` for local deploy.
+- Helm 3 for chart install, or [devenv](https://devenv.sh) for local deploy.
 - Reachable SurrealDB endpoint from controller Pod.
 - Kubernetes Secret containing SurrealDB admin credentials.
 - Go 1.24 for development.
@@ -163,7 +163,7 @@ helm install surrealdb-credential-operator \
 ### Install with Kustomize
 
 ```bash
-IMG=ghcr.io/seamlezz/surrealdb-credential-operator:v0.1.0 make deploy
+IMG=ghcr.io/seamlezz/surrealdb-credential-operator:v0.1.0 devenv shell -- deploy
 ```
 
 ### Request namespace level user
@@ -344,31 +344,25 @@ kubectl logs \
 
 ## Development
 
-Install Go 1.24, Docker, `kubectl`, and Kind for end to end tests.
+Install [devenv](https://devenv.sh) and Docker. `devenv shell` provides Go, `kubectl`, Kind, Helm and the other tools. CI runs the same commands.
 
 Common commands:
 
 ```bash
-make help
-make test
-make lint
-make build
-make test-e2e
-```
-
-Dagger workflows mirror CI:
-
-```bash
-dagger call check
+devenv shell -- check      # format check, vet, unit and envtest tests, chart
+devenv shell -- tests
+devenv shell -- lint       # golangci-lint
+devenv shell -- build
+devenv shell -- test-e2e   # throwaway Kind cluster with its own kubeconfig
 ```
 
 Useful local deploy commands:
 
 ```bash
-make install
-IMG=controller:latest make deploy
-make undeploy
-make uninstall
+devenv shell -- install-crds
+IMG=controller:latest devenv shell -- deploy
+devenv shell -- undeploy
+devenv shell -- uninstall-crds
 ```
 
 ## Security
